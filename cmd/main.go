@@ -4,20 +4,12 @@ import (
 	"context"
 	"log"
 
-	"github.com/Shopify/sarama"
 	"github.com/kelseyhightower/envconfig"
-	"google.golang.org/grpc"
 
 	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/app"
 	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/config"
+	reportHandler "github.com/ITA-Dnipro/Dp-230-Report-Service/internal/report/kafka/handler"
 )
-
-type AppDep struct {
-	Server   *grpc.Server
-	Client   *grpc.ClientConn
-	Producer sarama.SyncProducer
-	// Consumer *kafka.ConsumerHandler
-}
 
 func main() {
 	var cfg config.Config
@@ -28,13 +20,12 @@ func main() {
 }
 
 func run(cfg config.Config) error {
-	a, err := app.NewApp(cfg)
+	app, err := app.NewApp(cfg)
 	if err != nil {
 		return err
 	}
-	var dep AppDep
-	if err := a.Unwrap(&dep); err != nil {
-		return err
-	}
-	return a.Run(context.Background())
+
+	app.Consumer.Handler = reportHandler.New(app.MailSender)
+
+	return app.Run(context.Background())
 }

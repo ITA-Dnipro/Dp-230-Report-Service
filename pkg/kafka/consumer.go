@@ -12,19 +12,19 @@ import (
 	"go.uber.org/zap"
 )
 
-type ConsumerHandler interface {
+type Handler interface {
 	Handle(context.Context, *sarama.ConsumerMessage) error
 }
 
 type ConsumeGroupConfiguration struct {
-	StartupTimeout  time.Duration
+	StartupTimeout  time.Duration `default:"10s"`
 	ShutdownTimeout time.Duration
-	Topics          []string
+	Topics          []string `default:"test"`
 	Brokers         []string `default:":9091"`
-	GroupID         string
+	GroupID         string   `default:"test"`
 }
 
-type consumerWrapper struct {
+type ConsumerWrapper struct {
 	name string
 	sync.RWMutex
 	cfg            *ConsumeGroupConfiguration
@@ -32,7 +32,7 @@ type consumerWrapper struct {
 	tracerProvider trace.TracerProvider
 	logger         *zap.Logger
 	ready          chan struct{}
-	handler        ConsumerHandler
+	Handler        Handler
 	cancel         context.CancelFunc
 
 	// WaitGroup which returns when all goroutines started in Start() have finished.
@@ -41,7 +41,7 @@ type consumerWrapper struct {
 }
 
 // NewConsumerGroup will return a configured sarama.ConsumerGroup.
-func NewConsumerGroup(config interface{}, log *zap.Logger) (*consumerWrapper, error) {
+func NewConsumerGroup(name string, config interface{}, log *zap.Logger) (*ConsumerWrapper, error) {
 	cfg, ok := config.(*ConsumeGroupConfiguration)
 	if !ok || cfg == nil {
 		return nil, errors.New("invalid consumer group config")
@@ -52,7 +52,8 @@ func NewConsumerGroup(config interface{}, log *zap.Logger) (*consumerWrapper, er
 		return nil, err
 	}
 
-	return &consumerWrapper{
+	return &ConsumerWrapper{
+		name:          name,
 		cfg:           cfg,
 		consumerGroup: consumerGroup,
 		logger:        log,
@@ -60,11 +61,7 @@ func NewConsumerGroup(config interface{}, log *zap.Logger) (*consumerWrapper, er
 	}, nil
 }
 
-func (w *consumerWrapper) Unwrap() interface{} {
-	return w.handler
-}
-
-func (w *consumerWrapper) Start(ctx context.Context) error {
+func (w *ConsumerWrapper) Start(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -130,7 +127,7 @@ func (w *consumerWrapper) Start(ctx context.Context) error {
 	}
 }
 
-func (w *consumerWrapper) Stop(ctx context.Context) error {
+func (w *ConsumerWrapper) Stop(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, w.cfg.ShutdownTimeout)
 	defer cancel()
 
@@ -159,7 +156,7 @@ func (w *consumerWrapper) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (w *consumerWrapper) Setup(session sarama.ConsumerGroupSession) error {
+func (w *ConsumerWrapper) Setup(session sarama.ConsumerGroupSession) error {
 	w.Lock()
 	defer w.Unlock()
 	close(w.ready)
@@ -172,7 +169,7 @@ func (w *consumerWrapper) Setup(session sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-func (w *consumerWrapper) Cleanup(session sarama.ConsumerGroupSession) error {
+func (w *ConsumerWrapper) Cleanup(session sarama.ConsumerGroupSession) error {
 	w.Lock()
 	defer w.Unlock()
 	// Prepare the ready channel for the next session.
@@ -187,7 +184,7 @@ func (w *consumerWrapper) Cleanup(session sarama.ConsumerGroupSession) error {
 }
 
 // ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
-func (w *consumerWrapper) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+func (w *ConsumerWrapper) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	l := w.logger.With(zap.String("kafka.session.member_id", session.MemberID()),
 		zap.Int32("kafka.session.generation_id", session.GenerationID()))
 
@@ -207,7 +204,7 @@ func (w *consumerWrapper) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 			if !ok {
 				return nil
 			}
-			if err := w.handler.Handle(session.Context(), message); err != nil {
+			if err := w.Handler.Handle(session.Context(), message); err != nil {
 				w.logger.With(
 					zap.Int64("offset", message.Offset),
 					zap.Int32("partition", message.Partition),
@@ -224,6 +221,6 @@ func (w *consumerWrapper) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 	}
 }
 
-func (w *consumerWrapper) Name() string {
+func (w *ConsumerWrapper) Name() string {
 	return w.name
 }

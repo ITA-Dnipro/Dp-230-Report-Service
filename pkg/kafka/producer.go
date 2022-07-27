@@ -16,14 +16,14 @@ type ProducerConfiguration struct {
 	ShutdownTimeout time.Duration
 }
 
-type syncProducerWrapper struct {
+type SyncProducerWrapper struct {
 	name         string
 	cfg          *ProducerConfiguration
-	syncProducer sarama.SyncProducer
+	SyncProducer sarama.SyncProducer
 	logger       *zap.Logger
 }
 
-func NewSyncProducer(config interface{}, log *zap.Logger) (*syncProducerWrapper, error) {
+func NewSyncProducer(name string, config interface{}, log *zap.Logger) (*SyncProducerWrapper, error) {
 	cfg, ok := config.(*ProducerConfiguration)
 	if !ok || cfg == nil {
 		return nil, errors.New("invalid sync producer config")
@@ -36,29 +36,26 @@ func NewSyncProducer(config interface{}, log *zap.Logger) (*syncProducerWrapper,
 	if err != nil {
 		return nil, err
 	}
-	return &syncProducerWrapper{
+	return &SyncProducerWrapper{
+		name:         name,
 		cfg:          cfg,
-		syncProducer: syncProducer,
+		SyncProducer: syncProducer,
 		logger:       log,
 	}, nil
 }
 
-func (w *syncProducerWrapper) Unwrap() interface{} {
-	return w.syncProducer
-}
-
-func (w *syncProducerWrapper) Start(context.Context) error {
+func (w *SyncProducerWrapper) Start(context.Context) error {
 	return nil
 }
 
-func (w *syncProducerWrapper) Stop(ctx context.Context) error {
+func (w *SyncProducerWrapper) Stop(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, w.cfg.ShutdownTimeout)
 	defer cancel()
 
 	stop := make(chan error, 1)
 	go func() {
 		w.logger.Info("closing kafka sync producer")
-		stop <- w.syncProducer.Close()
+		stop <- w.SyncProducer.Close()
 	}()
 
 	select {
@@ -75,6 +72,6 @@ func (w *syncProducerWrapper) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (w *syncProducerWrapper) Name() string {
+func (w *SyncProducerWrapper) Name() string {
 	return w.name
 }

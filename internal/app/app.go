@@ -11,25 +11,30 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/config"
-	grpcWrapper "github.com/ITA-Dnipro/Dp-230-Report-Service/internal/grpc"
-	kafkaWrapper "github.com/ITA-Dnipro/Dp-230-Report-Service/internal/kafka"
-	"github.com/Shopify/sarama"
+	grpcWrapper "github.com/ITA-Dnipro/Dp-230-Report-Service/pkg/grpc"
+	kafkaWrapper "github.com/ITA-Dnipro/Dp-230-Report-Service/pkg/kafka"
+	"github.com/ITA-Dnipro/Dp-230-Report-Service/pkg/mail"
 )
 
 type Component interface {
 	Start(context.Context) error
 	Stop(context.Context) error
-	Unwrap() interface{}
 	Name() string
 }
 
 type App struct {
-	config         config.Config
-	logger         *zap.Logger
-	initComponents map[string]Component
+	config     config.Config
+	logger     *zap.Logger
+	components []Component
+
+	//Components
+	Server *grpcWrapper.ServerWrapper
+	Client *grpcWrapper.ClientWrapper
+	//Producer *kafkaWrapper.SyncProducerWrapper
+	Consumer   *kafkaWrapper.ConsumerWrapper
+	MailSender *mail.MailSender
 }
 
 func NewApp(cfg config.Config) (*App, error) {
@@ -37,17 +42,58 @@ func NewApp(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	components, err := initComponents(cfg, logger)
-	if err != nil {
+	app := &App{
+		logger: logger,
+		config: cfg,
+	}
+	if err := app.initComponents(); err != nil {
 		return nil, err
 	}
 
-	app := &App{
-		logger:         logger,
-		initComponents: components,
-	}
 	return app, nil
+}
+
+func (a *App) initComponents() error {
+	a.components = make([]Component, 0)
+
+	srv, err := grpcWrapper.NewServer("grpc server", a.config.Server, a.logger)
+	if err != nil {
+		return err
+	}
+	a.Server, a.components = srv, append(a.components, srv)
+
+	client, err := grpcWrapper.NewClient("grpc client", a.config.Client, a.logger)
+	if err != nil {
+		return err
+	}
+	a.Client, a.components = client, append(a.components, client)
+
+	consumer, err := kafkaWrapper.NewConsumerGroup("kafka consumer", a.config.Consumer, a.logger)
+	if err != nil {
+		return err
+	}
+	a.Consumer, a.components = consumer, append(a.components, consumer)
+
+	sender, err := mail.NewMailSender("mail sender", a.config.MailSender, a.logger)
+	if err != nil {
+		return err
+	}
+	a.MailSender = sender
+
+	return a.validateComponents()
+}
+
+func (a *App) validateComponents() error {
+	v := reflect.ValueOf(a).Elem()
+	t := reflect.TypeOf(a).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		fv := v.Field(i)
+		ft := t.Field(i)
+		if ft.IsExported() && fv.IsNil() {
+			return errors.New(fmt.Sprintf("%s not initialized", ft.Name))
+		}
+	}
+	return nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -68,9 +114,9 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 
-	for name, comp := range a.initComponents {
-		if err := comp.Start(ctx); err != nil {
-			a.logger.Warn("failed to stop", zap.String("component", name), zap.Error(err))
+	for _, c := range a.components {
+		if err := c.Start(ctx); err != nil {
+			a.logger.Warn("failed to start", zap.String("component", c.Name()), zap.Error(err))
 		}
 	}
 
@@ -85,59 +131,10 @@ func (a *App) stop() error {
 	shutdownTimeout := time.Second * 30
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	_ = ctx
-	// for _, c := range a.components {
-	// 	err := c.Stop(ctx)
-	// 	if err != nil {
-	// 		a.logger.Warn("failed to stop", zap.String("component", c.Name()), zap.Error(err))
-	// 	}
-	// }
-	return nil
-}
-func (a *App) Unwrap(dep interface{}) error {
-	t := reflect.TypeOf(dep)
-	v := reflect.ValueOf(dep)
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-		v = v.Elem()
-	}
-	for i := 0; i < t.NumField(); i++ {
-		tf := t.Field(i)
-		fn := tf.Name
-		ft := tf.Type.Elem().String()
-		comp, ok := a.initComponents[fn]
-		if !ok {
-			return errors.New(fmt.Sprintf("could not find config for component %s", fn))
-		}
-
-		switch ft {
-		case "grpc.Server":
-			uc, ok := comp.Unwrap().(*grpc.Server)
-			if !ok {
-				return errors.New("wrong type")
-			}
-			v.Field(i).Set(reflect.ValueOf(uc))
-		case "grpc.ClientConn":
-			uc, ok := comp.Unwrap().(*grpc.ClientConn)
-			if !ok {
-				return errors.New("wrong type")
-			}
-			v.Field(i).Set(reflect.ValueOf(uc))
-		case "sarama.SyncProducer":
-			uc, ok := comp.Unwrap().(sarama.SyncProducer)
-			if !ok {
-				return errors.New("wrong type")
-			}
-			v.Field(i).Set(reflect.ValueOf(uc))
-		case "kafka.ConsumerHandler":
-			uc, ok := comp.Unwrap().(*grpc.ClientConn)
-			if !ok {
-				return errors.New("wrong type")
-			}
-			v.Field(i).Set(reflect.ValueOf(uc))
-
-		default:
-			return errors.New(fmt.Sprintf("unsuported type %s", ft))
+	for _, c := range a.components {
+		err := c.Stop(ctx)
+		if err != nil {
+			a.logger.Warn("failed to stop", zap.String("component", c.Name()), zap.Error(err))
 		}
 	}
 	return nil
@@ -155,49 +152,4 @@ func verifyConfigStructOrPtr(cfg interface{}) error {
 		return errors.New("application configuration should be a struct")
 	}
 	return nil
-}
-
-func initComponent(fieldType string, val interface{}, log *zap.Logger) (Component, error) {
-	var comp interface{}
-	var err error
-	switch fieldType {
-	case "grpc.ServerConfiguration":
-		cfg := val.(*grpcWrapper.ServerConfiguration)
-		comp, err = grpcWrapper.NewServer(cfg, log)
-	case "grpc.ClientConfiguration":
-		cfg := val.(*grpcWrapper.ClientConfiguration)
-		comp, err = grpcWrapper.NewClient(cfg, log)
-	case "kafka.ProducerConfiguration":
-		cfg := val.(*kafkaWrapper.ProducerConfiguration)
-		comp, err = kafkaWrapper.NewSyncProducer(cfg, log)
-	case "kafka.ConsumeGroupConfiguration":
-		cfg := val.(*kafkaWrapper.ConsumeGroupConfiguration)
-		comp, err = kafkaWrapper.NewConsumerGroup(cfg, log)
-	default:
-		return nil, errors.New("unknown config type")
-	}
-	if err != nil {
-		return nil, err
-	}
-	c, ok := comp.(Component)
-	if !ok {
-		return nil, errors.New("cant convert component")
-	}
-	return c, nil
-}
-
-func initComponents(cfg config.Config, log *zap.Logger) (map[string]Component, error) {
-	res := make(map[string]Component)
-	t := reflect.TypeOf(cfg)
-	v := reflect.ValueOf(cfg)
-	for i := 0; i < t.NumField(); i++ {
-		ft := t.Field(i).Type.Elem().String()
-		fv := v.Field(i).Interface()
-		cp, err := initComponent(ft, fv, log)
-		if err != nil {
-			return nil, err
-		}
-		res[t.Field(i).Name] = cp
-	}
-	return res, nil
 }

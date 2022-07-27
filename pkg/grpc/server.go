@@ -15,27 +15,28 @@ type ServerConfiguration struct {
 	ShutdownTimeout time.Duration
 }
 
-type grpcServerWrapper struct {
+type ServerWrapper struct {
 	name   string
 	cfg    *ServerConfiguration
-	server *grpc.Server
+	Server *grpc.Server
 	logger *zap.Logger
 }
 
-func NewServer(config interface{}, log *zap.Logger) (*grpcServerWrapper, error) {
+func NewServer(name string, config interface{}, log *zap.Logger) (*ServerWrapper, error) {
 	cfg, ok := config.(*ServerConfiguration)
 	if !ok || cfg == nil {
 		return nil, errors.New("invalid server config")
 	}
 	srv := grpc.NewServer()
-	return &grpcServerWrapper{
+	return &ServerWrapper{
+		name:   name,
 		cfg:    cfg,
-		server: srv,
+		Server: srv,
 		logger: log,
 	}, nil
 }
 
-func (w *grpcServerWrapper) Start(ctx context.Context) error {
+func (w *ServerWrapper) Start(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -47,20 +48,20 @@ func (w *grpcServerWrapper) Start(ctx context.Context) error {
 
 	go func() {
 		w.logger.Info("starting grpc server")
-		if err := w.server.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		if err := w.Server.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			w.logger.Error("grpc server failed", zap.Error(err))
 		}
 	}()
 	return nil
 }
 
-func (w *grpcServerWrapper) Stop(ctx context.Context) error {
+func (w *ServerWrapper) Stop(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, w.cfg.ShutdownTimeout)
 	defer cancel()
 	grpcStopCh := make(chan struct{})
 	go func() {
 		w.logger.Info("gracefully shutting down grpc server")
-		w.server.GracefulStop()
+		w.Server.GracefulStop()
 		close(grpcStopCh)
 	}()
 	select {
@@ -68,17 +69,13 @@ func (w *grpcServerWrapper) Stop(ctx context.Context) error {
 		w.logger.Info("gracefully shut down grpc server")
 	case <-ctx.Done():
 		w.logger.Warn("stopping grpc server")
-		w.server.Stop()
+		w.Server.Stop()
 		<-grpcStopCh
 		grpcStopCh = nil
 	}
 	return nil
 }
 
-func (w *grpcServerWrapper) Unwrap() interface{} {
-	return w.server
-}
-
-func (w *grpcServerWrapper) Name() string {
+func (w *ServerWrapper) Name() string {
 	return w.name
 }

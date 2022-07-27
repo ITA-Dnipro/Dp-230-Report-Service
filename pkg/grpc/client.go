@@ -12,14 +12,14 @@ type ClientConfiguration struct {
 	Target string
 }
 
-type grpcClientWrapper struct {
+type ClientWrapper struct {
 	name       string
 	cfg        *ClientConfiguration
-	clientConn *grpc.ClientConn
+	ClientConn *grpc.ClientConn
 	logger     *zap.Logger
 }
 
-func NewClient(config interface{}, log *zap.Logger) (*grpcClientWrapper, error) {
+func NewClient(name string, config interface{}, log *zap.Logger) (*ClientWrapper, error) {
 	cfg, ok := config.(*ClientConfiguration)
 	if !ok || cfg == nil {
 		return nil, errors.New("invalid client config")
@@ -28,26 +28,23 @@ func NewClient(config interface{}, log *zap.Logger) (*grpcClientWrapper, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &grpcClientWrapper{
+	return &ClientWrapper{
+		name:       name,
 		cfg:        cfg,
-		clientConn: conn,
+		ClientConn: conn,
 		logger:     log,
 	}, nil
 }
 
-func (w *grpcClientWrapper) Start(context.Context) error {
+func (w *ClientWrapper) Start(context.Context) error {
 	return nil
 }
 
-func (w *grpcClientWrapper) Stop(context.Context) error {
+func (w *ClientWrapper) Stop(context.Context) error {
 	w.logger.Info("closing grpc client", zap.String("target", w.cfg.Target))
-	return w.clientConn.Close()
+	return w.ClientConn.Close()
 }
 
-func (w *grpcClientWrapper) Unwrap() interface{} {
-	return w.clientConn
-}
-
-func (w *grpcClientWrapper) Name() string {
+func (w *ClientWrapper) Name() string {
 	return w.name
 }
