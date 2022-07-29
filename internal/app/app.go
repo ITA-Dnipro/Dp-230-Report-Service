@@ -117,6 +117,7 @@ func (a *App) Run(ctx context.Context) error {
 	for _, c := range a.components {
 		if err := c.Start(ctx); err != nil {
 			a.logger.Warn("failed to start", zap.String("component", c.Name()), zap.Error(err))
+			return fmt.Errorf("can't start component [%s]: %w", c.Name(), err)
 		}
 	}
 

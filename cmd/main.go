@@ -8,7 +8,8 @@ import (
 
 	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/app"
 	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/config"
-	reportHandler "github.com/ITA-Dnipro/Dp-230-Report-Service/internal/report/kafka/handler"
+	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/report/kafka/handler"
+	"github.com/ITA-Dnipro/Dp-230-Report-Service/internal/report/mail"
 )
 
 func main() {
@@ -24,8 +25,8 @@ func run(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-
-	app.Consumer.Handler = reportHandler.New(app.MailSender)
+	sender := mail.NewReportMailSender(app.MailSender, cfg.FrontEndServiceBaseURL)
+	app.Consumer.Handler = handler.NewConsumerHandler(sender)
 
 	return app.Run(context.Background())
 }
